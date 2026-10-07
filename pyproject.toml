@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcore-a2a-travel-demo"
+version = "0.1.0"
+description = "A two-agent travel concierge demo for Amazon Bedrock AgentCore Runtime"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "aws-cdk-lib>=2.271,<3",
+  "boto3>=1.42,<2",
+  "constructs>=10,<11",
+]
+
+[project.optional-dependencies]
+agents = [
+  "bedrock-agentcore[a2a]>=1.24,<2",
+  "strands-agents>=1.57,<2",
+]
+dev = [
+  "bedrock-agentcore[a2a]>=1.24,<2",
+  "mypy>=1.15,<2",
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.26,<2",
+  "ruff>=0.11,<1",
+  "strands-agents>=1.57,<2",
+]
+
+[tool.setuptools.packages.find]
+include = ["agents*", "infrastructure*", "scripts*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+  "integration: tests that invoke deployed AWS resources",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+exclude = ["cdk.out"]
+
+[[tool.mypy.overrides]]
+module = ["boto3", "botocore.*", "strands.multiagent.a2a.*"]
+ignore_missing_imports = true

@@ -1,0 +1,15 @@
+aws-cdk-lib<3,>=2.271
+boto3<2,>=1.42
+constructs<11,>=10
+
+[agents]
+bedrock-agentcore[a2a]<2,>=1.24
+strands-agents<2,>=1.57
+
+[dev]
+bedrock-agentcore[a2a]<2,>=1.24
+mypy<2,>=1.15
+pytest<9,>=8
+pytest-asyncio<2,>=0.26
+ruff<1,>=0.11
+strands-agents<2,>=1.57

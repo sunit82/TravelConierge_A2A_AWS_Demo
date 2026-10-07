@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: agentcore-a2a-travel-demo
+Version: 0.1.0
+Summary: A two-agent travel concierge demo for Amazon Bedrock AgentCore Runtime
+Requires-Python: <3.13,>=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: aws-cdk-lib<3,>=2.271
+Requires-Dist: boto3<2,>=1.42
+Requires-Dist: constructs<11,>=10
+Provides-Extra: agents
+Requires-Dist: bedrock-agentcore[a2a]<2,>=1.24; extra == "agents"
+Requires-Dist: strands-agents<2,>=1.57; extra == "agents"
+Provides-Extra: dev
+Requires-Dist: bedrock-agentcore[a2a]<2,>=1.24; extra == "dev"
+Requires-Dist: mypy<2,>=1.15; extra == "dev"
+Requires-Dist: pytest<9,>=8; extra == "dev"
+Requires-Dist: pytest-asyncio<2,>=0.26; extra == "dev"
+Requires-Dist: ruff<1,>=0.11; extra == "dev"
+Requires-Dist: strands-agents<2,>=1.57; extra == "dev"

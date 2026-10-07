@@ -1,0 +1,9 @@
+{
+  "app": "python app.py",
+  "context": {
+    "mainRuntimeName": "TravelConciergeMain",
+    "weatherRuntimeName": "WeatherPackingSpecialist",
+    "@aws-cdk/core:checkSecretUsage": true
+  }
+}
+

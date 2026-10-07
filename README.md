@@ -1,0 +1,570 @@
+# Travel Concierge A2A on Amazon Bedrock AgentCore
+
+This project deploys two independently hosted, IAM-protected A2A agents:
+
+- **Travel Concierge** - answers general travel questions and uses model-driven tool
+  selection to decide whether specialist help is needed.
+- **Weather and Packing Specialist** - returns packing advice based on deterministic
+  weather fixtures. It does not call a live weather service.
+
+The agents run as ARM64 containers in Amazon Bedrock AgentCore Runtime. The main
+agent invokes the specialist through `InvokeAgentRuntime` with an A2A JSON-RPC
+`message/send` payload.
+
+## Architecture
+
+```text
+Caller
+  |
+  | Assume DemoInvokerRole
+  | IAM/SigV4 InvokeAgentRuntime
+  v
+TravelConciergeMain (A2A)
+  |-- general question --> direct Bedrock model response
+  |
+  `-- weather/packing question
+        |
+        | main execution role
+        | IAM/SigV4 InvokeAgentRuntime
+        v
+      WeatherPackingSpecialist (A2A)
+        `-- deterministic fixture lookup + packing advice
+```
+
+Both runtimes:
+
+- use the A2A protocol;
+- listen on port 9000 inside their containers;
+- expose `POST /`, `GET /ping`, and `GET /.well-known/agent-card.json`;
+- use IAM authorization;
+- invoke the configured Bedrock model or inference profile;
+- write runtime telemetry to CloudWatch and X-Ray.
+
+## Repository layout
+
+```text
+agents/common/          Shared settings, A2A request builder, response parser
+agents/main_agent/      Travel concierge, A2A specialist client, container
+agents/weather_agent/   Weather fixtures, tool, specialist, container
+infrastructure/         AWS CDK stack and deployment configuration
+scripts/                Invoke, Agent Card, and smoke-test commands
+tests/unit/             AWS-independent tests
+tests/integration/      Opt-in tests for deployed runtimes
+app.py                  CDK application entry point
+```
+
+## Prerequisites
+
+Install:
+
+1. An AWS account with Amazon Bedrock AgentCore Runtime available.
+2. AWS CLI v2.
+3. Python 3.12.
+4. Node.js 20 or later and npm.
+5. Docker Desktop configured for Linux containers.
+6. AWS CDK CLI v2:
+
+   ```powershell
+   npm install --global aws-cdk
+   cdk --version
+   ```
+
+The deployment identity needs permission to:
+
+- bootstrap and deploy CDK stacks;
+- publish Docker assets to the CDK bootstrap ECR repository;
+- create and pass the three IAM roles in this stack;
+- create, update, and delete AgentCore runtimes;
+- configure CloudWatch and X-Ray delivery resources;
+- create CloudFormation resources.
+
+For a temporary demo, an administrator identity is simplest. In a controlled
+environment, use a dedicated CloudFormation deployment role with those scoped
+permissions.
+
+## 1. Configure AWS credentials
+
+For IAM Identity Center:
+
+```powershell
+aws configure sso
+aws sso login --profile <profile>
+$env:AWS_PROFILE = "<profile>"
+aws sts get-caller-identity
+```
+
+For long-lived IAM credentials, use `aws configure`, but IAM Identity Center or
+another short-lived credential mechanism is recommended.
+
+Record the account:
+
+```powershell
+$AccountId = aws sts get-caller-identity --query Account --output text
+$Region = "us-east-1"
+```
+
+Choose a region that supports both AgentCore Runtime and the intended Bedrock
+model/inference profile.
+
+## 2. Select and enable a Bedrock model
+
+List available inference profiles:
+
+```powershell
+aws bedrock list-inference-profiles `
+  --region $Region `
+  --query "inferenceProfileSummaries[].{Id:inferenceProfileId,Name:inferenceProfileName,Status:status}"
+```
+
+Set the exact model ID, inference-profile ID, or inference-profile ARN:
+
+```powershell
+$ModelId = "<model-or-inference-profile-id>"
+```
+
+If the account uses the Bedrock console model-access workflow:
+
+1. Open **Amazon Bedrock** in the selected region.
+2. Open **Model access** or **Model catalog**.
+3. Request or enable access for the selected provider/model.
+4. Complete any provider use-case form.
+5. Wait until access is granted.
+
+Newer Bedrock models may be automatically enabled on first authorized use. An
+organization SCP, marketplace subscription, or provider form can still block use.
+
+Verify model access before deploying. Adjust the request body for the selected
+provider:
+
+```powershell
+aws bedrock-runtime converse `
+  --region $Region `
+  --model-id $ModelId `
+  --messages '[{"role":"user","content":[{"text":"Reply with OK"}]}]'
+```
+
+## 3. Choose the allowed caller principal
+
+The stack creates `DemoInvokerRole`. Only one configured IAM user or role can
+assume it, and that role can invoke only the main runtime.
+
+Get the current principal:
+
+```powershell
+$InvokerPrincipalArn = aws sts get-caller-identity --query Arn --output text
+```
+
+If this returns an STS assumed-role ARN such as
+`arn:aws:sts::<account>:assumed-role/RoleName/session`, use the underlying IAM
+role ARN instead:
+
+```text
+arn:aws:iam::<account>:role/RoleName
+```
+
+An IAM Identity Center session commonly uses an AWS-reserved SSO role. Find its
+IAM role ARN in IAM and use that ARN.
+
+## 4. Create the local environment
+
+From the repository root:
+
+```powershell
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[dev]"
+```
+
+The `dev` extra installs CDK, boto3, AgentCore A2A support, Strands Agents,
+pytest, Ruff, and mypy. Each container has a separate requirements file used by
+Docker during deployment.
+
+## 5. Run locally
+
+### AWS-independent validation
+
+```powershell
+ruff check .
+mypy .
+pytest tests\unit
+```
+
+Unit tests validate fixtures, input validation, JSON-RPC parsing, retries,
+configuration, and tool wiring without making AWS calls.
+
+### Run a local agent server
+
+A real local agent still invokes Amazon Bedrock and therefore needs AWS
+credentials and model permission.
+
+Weather specialist:
+
+```powershell
+$env:AWS_REGION = $Region
+$env:MODEL_ID = $ModelId
+python -m agents.weather_agent.main
+```
+
+The server listens on `http://localhost:9000`. In another terminal:
+
+```powershell
+Invoke-RestMethod http://localhost:9000/ping
+Invoke-RestMethod http://localhost:9000/.well-known/agent-card.json
+```
+
+The main agent additionally requires a deployed specialist runtime ARN because
+its specialist transport is the managed AgentCore API:
+
+```powershell
+$env:SUBAGENT_RUNTIME_ARN = "<WeatherRuntimeArn>"
+python -m agents.main_agent.main
+```
+
+## 6. Understand the AWS resources
+
+CDK creates these application resources:
+
+1. **Weather execution IAM role**
+   - trusted only by `bedrock-agentcore.amazonaws.com`;
+   - can invoke the selected Bedrock model/profile;
+   - can emit X-Ray traces and AgentCore metrics;
+   - cannot invoke the main runtime.
+2. **Main execution IAM role**
+   - has the same model/telemetry permissions;
+   - can invoke only the weather runtime.
+3. **Weather AgentCore Runtime**
+   - ARM64 Docker image;
+   - public network mode;
+   - A2A protocol and IAM authorization;
+   - `MODEL_ID` environment variable.
+4. **Main AgentCore Runtime**
+   - ARM64 Docker image;
+   - public network mode;
+   - A2A protocol and IAM authorization;
+   - `MODEL_ID` and deployment-generated `SUBAGENT_RUNTIME_ARN`.
+5. **Demo invoker IAM role**
+   - trusted only by `invokerPrincipalArn`;
+   - can invoke only the main runtime.
+6. **CDK image assets**
+   - built locally for `linux/arm64`;
+   - pushed to the shared CDK bootstrap ECR repository.
+7. **Observability resources**
+   - runtime logs under `/aws/bedrock-agentcore/runtimes/`;
+   - metrics and traces delivered through AgentCore, CloudWatch, and X-Ray.
+
+No VPC, NAT gateway, database, secret, or external weather API is required.
+
+### Model IAM scoping
+
+The stack scopes model calls to the configured identifier where possible. A
+cross-region inference-profile ID also needs access to destination-region
+foundation models; the stack adds a partition-wide foundation-model resource
+pattern for that case. Review synthesized IAM before production. Organizations
+should replace the portable helper with an approved model/profile allowlist.
+
+## 7. Bootstrap CDK
+
+Bootstrap each account/region once:
+
+```powershell
+cdk bootstrap "aws://$AccountId/$Region"
+```
+
+This creates shared CDK deployment roles, an S3 staging bucket, and an ECR
+repository. Do not delete bootstrap resources when destroying this demo if other
+CDK stacks use them.
+
+Docker must be running before synthesis/deployment because CDK hashes and builds
+container assets.
+
+## 8. Synthesize and inspect
+
+```powershell
+cdk synth `
+  --context "region=$Region" `
+  --context "modelId=$ModelId" `
+  --context "invokerPrincipalArn=$InvokerPrincipalArn"
+```
+
+Optional names:
+
+```powershell
+--context "mainRuntimeName=TravelConciergeMain" `
+--context "weatherRuntimeName=WeatherPackingSpecialist"
+```
+
+Inspect `cdk.out` and confirm:
+
+- two `AWS::BedrockAgentCore::Runtime` resources;
+- A2A protocol and IAM authorizer on both;
+- distinct execution roles;
+- main-to-weather invoke permission scoped to the weather runtime;
+- demo role invoke permission scoped to the main runtime;
+- no subagent-to-main invoke permission;
+- ARM64 Docker assets.
+
+## 9. Deploy to AWS
+
+```powershell
+cdk deploy `
+  --context "region=$Region" `
+  --context "modelId=$ModelId" `
+  --context "invokerPrincipalArn=$InvokerPrincipalArn" `
+  --require-approval broadening `
+  --outputs-file cdk-outputs.json
+```
+
+CDK builds and publishes both images, creates roles, creates the specialist,
+wires its ARN into the main runtime, and creates the invoker role.
+
+Read outputs:
+
+```powershell
+$Outputs = Get-Content .\cdk-outputs.json | ConvertFrom-Json
+$Stack = $Outputs.AgentCoreA2ATravelDemo
+$MainRuntimeArn = $Stack.MainRuntimeArn
+$WeatherRuntimeArn = $Stack.WeatherRuntimeArn
+$DemoInvokerRoleArn = $Stack.DemoInvokerRoleArn
+```
+
+Wait until both runtimes report ready in the Amazon Bedrock AgentCore console
+before invoking them.
+
+## 10. Retrieve the main Agent Card
+
+```powershell
+python -m scripts.get_agent_card `
+  --runtime-arn $MainRuntimeArn `
+  --role-arn $DemoInvokerRoleArn
+```
+
+The script assumes the demo role and calls the AgentCore `GetAgentCard` API with
+SigV4 credentials. The demo role intentionally cannot retrieve or invoke the
+specialist directly.
+
+## 11. Invoke the application in AWS
+
+Delegation example:
+
+```powershell
+python -m scripts.invoke_main `
+  --runtime-arn $MainRuntimeArn `
+  --role-arn $DemoInvokerRoleArn `
+  --prompt "I am visiting Tokyo in April. What weather should I expect, and what should I pack?"
+```
+
+Expected behavior:
+
+- main agent selects `consult_weather_packing_specialist`;
+- weather agent calls `lookup_demo_weather`;
+- response mentions Tokyo's 10-19 C fixture;
+- response includes clothing/rain advice;
+- response explicitly identifies deterministic demo data.
+
+Direct-answer example:
+
+```powershell
+python -m scripts.invoke_main `
+  --runtime-arn $MainRuntimeArn `
+  --role-arn $DemoInvokerRoleArn `
+  --prompt "Explain the difference between a direct flight and a nonstop flight in two sentences."
+```
+
+The main agent should answer without invoking the specialist.
+
+Run both checks:
+
+```powershell
+python -m scripts.smoke_test `
+  --runtime-arn $MainRuntimeArn `
+  --role-arn $DemoInvokerRoleArn
+```
+
+Run opt-in deployed tests:
+
+```powershell
+$env:MAIN_RUNTIME_ARN = $MainRuntimeArn
+$env:DEMO_INVOKER_ROLE_ARN = $DemoInvokerRoleArn
+pytest -m integration tests\integration
+```
+
+These commands invoke paid AWS resources.
+
+## 12. Verify logs, metrics, and traces
+
+### CloudWatch Logs
+
+1. Open **CloudWatch** in the deployment region.
+2. Open **Logs > Log groups**.
+3. Find groups beneath `/aws/bedrock-agentcore/runtimes/`.
+4. Invoke one delegation and one direct prompt.
+5. Search main logs for `specialist_invocation`.
+
+Delegated calls emit structured fields similar to:
+
+```json
+{
+  "event": "specialist_invocation",
+  "delegated_to_subagent": true,
+  "target_runtime_id": "WeatherPackingSpecialist-...",
+  "session_id": "...",
+  "attempt": 1,
+  "outcome": "success"
+}
+```
+
+The direct request must not have a specialist invocation for its request window.
+
+### X-Ray and GenAI observability
+
+Open CloudWatch **GenAI observability** or X-Ray:
+
+- delegation trace: main model/tool span, AgentCore invocation, weather agent
+  model/tool spans;
+- direct trace: main model span with no weather-runtime invocation.
+
+Telemetry can take several minutes to appear.
+
+### Access-control checks
+
+From a principal that does not have `bedrock-agentcore:InvokeAgentRuntime`, an
+invoke must return `AccessDeniedException`.
+
+The demo role must also fail when used with `$WeatherRuntimeArn`. This proves
+that callers cannot bypass the main concierge and call the specialist directly.
+
+## Troubleshooting
+
+### `cdk` is not recognized
+
+Install the CLI and reopen the terminal:
+
+```powershell
+npm install --global aws-cdk
+```
+
+Or use `npx aws-cdk`.
+
+### Docker build fails for ARM64
+
+- Start Docker Desktop.
+- Use Linux containers.
+- Enable containerd/buildx if required.
+- Verify:
+
+  ```powershell
+  docker buildx inspect --bootstrap
+  ```
+
+- On restricted networks, allow access to public ECR and package indexes.
+- If your organization provides a Python package proxy, the Dockerfiles accept
+  the standard build argument without embedding it in source:
+
+  ```powershell
+  docker build --build-arg "PIP_INDEX_URL=https://your-approved-proxy/simple/" `
+    --platform linux/arm64 `
+    --file agents\weather_agent\Dockerfile .
+  ```
+
+  Do not pass credentials in a build argument because build metadata may retain
+  them. Use an unauthenticated approved proxy or Docker BuildKit secrets.
+
+### Bedrock `AccessDeniedException`
+
+- Confirm model access in the same region.
+- Confirm the exact model/profile identifier passed to CDK.
+- For cross-region profiles, check destination-region model access and SCPs.
+- Inspect the generated execution-role policy in CloudFormation/IAM.
+- Confirm no permission boundary blocks `bedrock:InvokeModel`.
+
+### AgentCore runtime does not become ready
+
+- Open its runtime logs.
+- Confirm the container is ARM64.
+- Confirm it starts `python -m agents.<agent>.main`.
+- Confirm required environment variables are present.
+- Confirm the A2A server binds to `0.0.0.0:9000`.
+- Check ECR image pull and execution-role trust failures.
+
+### Specialist invocation is denied
+
+- Confirm `SUBAGENT_RUNTIME_ARN` in the main runtime matches the deployed weather
+  runtime.
+- Confirm the main execution role has
+  `bedrock-agentcore:InvokeAgentRuntime` only on that ARN.
+- Confirm both runtimes are in the same region/account.
+
+### Session conflict (`-32054`)
+
+The specialist client retries this documented transient conflict up to three
+times with bounded exponential backoff and jitter. Persistent conflicts indicate
+an unhealthy or concurrent session workflow and are surfaced as errors.
+
+### The model does not delegate consistently
+
+- Use a tool-capable Bedrock model.
+- Keep the delegation prompt explicit about destination, month, weather, or
+  packing.
+- Review the main model/tool trace.
+- Model routing is semantic and can vary; deterministic unit tests validate
+  wiring while deployed tests validate the chosen model.
+
+## Security and production hardening
+
+This is a least-privilege demo, not a complete production platform. Before
+production:
+
+- deploy in an approved VPC/network architecture;
+- add permission boundaries, SCP alignment, and cross-account resource policies;
+- use an application inference profile for cost attribution and quotas;
+- pin dependencies and image digests and scan both;
+- add input/output controls and prompt-injection defenses;
+- encrypt logs with a customer-managed KMS key and set retention;
+- add alarms for errors, throttling, latency, concurrency, and model spend;
+- add runtime versions/qualifiers and controlled promotion;
+- review regional quotas and run load tests;
+- use Secrets Manager and controlled egress before adding a real weather API.
+
+Never put AWS credentials, model-provider keys, or secrets in source code or
+runtime environment variables managed in plaintext.
+
+## Cost
+
+Potential charges include:
+
+- AgentCore Runtime usage;
+- Bedrock model input/output tokens;
+- CloudWatch Logs, metrics, and GenAI observability;
+- X-Ray traces;
+- ECR image storage;
+- CDK bootstrap S3 storage.
+
+The deterministic fixture lookup itself has no third-party API cost. Destroy the
+stack after use and review AWS Pricing for the selected region/model.
+
+## Cleanup
+
+```powershell
+cdk destroy `
+  --context "region=$Region" `
+  --context "modelId=$ModelId" `
+  --context "invokerPrincipalArn=$InvokerPrincipalArn"
+```
+
+Then verify:
+
+- both AgentCore runtimes are deleted;
+- the three demo IAM roles are deleted;
+- demo-specific CloudWatch delivery/log resources follow their configured
+  retention behavior;
+- shared CDK bootstrap resources remain.
+
+Delete local generated files if desired:
+
+```powershell
+Remove-Item .\cdk-outputs.json -ErrorAction SilentlyContinue
+Remove-Item Env:MAIN_RUNTIME_ARN -ErrorAction SilentlyContinue
+Remove-Item Env:DEMO_INVOKER_ROLE_ARN -ErrorAction SilentlyContinue
+```

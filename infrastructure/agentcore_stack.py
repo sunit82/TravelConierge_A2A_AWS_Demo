@@ -37,6 +37,11 @@ class AgentCoreA2ATravelStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
+        build_args = (
+            {"PIP_INDEX_URL": config.pip_index_url}
+            if config.pip_index_url is not None
+            else None
+        )
         weather_role = self._execution_role("WeatherExecutionRole", config.model_id)
         main_role = self._execution_role("MainExecutionRole", config.model_id)
 
@@ -49,6 +54,7 @@ class AgentCoreA2ATravelStack(Stack):
                 str(PROJECT_ROOT),
                 file="agents/weather_agent/Dockerfile",
                 platform=ecr_assets.Platform.LINUX_ARM64,
+                build_args=build_args,
             ),
             protocol_configuration=agentcore.ProtocolType.A2_A,
             authorizer_configuration=agentcore.RuntimeAuthorizerConfiguration.using_iam(),
@@ -67,6 +73,7 @@ class AgentCoreA2ATravelStack(Stack):
                 str(PROJECT_ROOT),
                 file="agents/main_agent/Dockerfile",
                 platform=ecr_assets.Platform.LINUX_ARM64,
+                build_args=build_args,
             ),
             protocol_configuration=agentcore.ProtocolType.A2_A,
             authorizer_configuration=agentcore.RuntimeAuthorizerConfiguration.using_iam(),

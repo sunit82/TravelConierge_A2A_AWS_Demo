@@ -463,12 +463,19 @@ Or use `npx aws-cdk`.
 
 - On restricted networks, allow access to public ECR and package indexes.
 - If your organization provides a Python package proxy, the Dockerfiles accept
-  the standard build argument without embedding it in source:
+  the standard build argument without embedding it in source. Pass the
+  unauthenticated proxy URL to CDK so it applies to both runtime image builds:
 
   ```powershell
-  docker build --build-arg "PIP_INDEX_URL=https://your-approved-proxy/simple/" `
-    --platform linux/arm64 `
-    --file agents\weather_agent\Dockerfile .
+  $PipIndexUrl = "https://packagefeedproxy.microsoft.io/pypi/simple/"
+
+  cdk deploy AgentCoreA2ATravelDemo `
+    --context "region=$Region" `
+    --context "modelId=$ModelId" `
+    --context "invokerPrincipalArn=$InvokerPrincipalArn" `
+    --context "pipIndexUrl=$PipIndexUrl" `
+    --require-approval broadening `
+    --outputs-file cdk-outputs.json
   ```
 
   Do not pass credentials in a build argument because build metadata may retain

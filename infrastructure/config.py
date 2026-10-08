@@ -16,10 +16,15 @@ class DeploymentConfig:
     invoker_principal_arn: str
     main_runtime_name: str = "TravelConciergeMain"
     weather_runtime_name: str = "WeatherPackingSpecialist"
+    pip_index_url: str | None = None
 
     def __post_init__(self) -> None:
         if not self.model_id.strip():
             raise ValueError("CDK context modelId is required and must not be blank")
+        if self.pip_index_url is not None and not self.pip_index_url.startswith(
+            "https://"
+        ):
+            raise ValueError("CDK context pipIndexUrl must be an HTTPS URL")
         if not _PRINCIPAL_ARN.fullmatch(self.invoker_principal_arn):
             raise ValueError(
                 "CDK context invokerPrincipalArn must be an IAM user or role ARN"
@@ -54,5 +59,10 @@ class DeploymentConfig:
             main_runtime_name=context_string("mainRuntimeName", "TravelConciergeMain"),
             weather_runtime_name=context_string(
                 "weatherRuntimeName", "WeatherPackingSpecialist"
+            ),
+            pip_index_url=(
+                context_string("pipIndexUrl")
+                if app.node.try_get_context("pipIndexUrl") is not None
+                else None
             ),
         )

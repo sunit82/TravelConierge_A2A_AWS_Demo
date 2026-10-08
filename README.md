@@ -269,7 +269,10 @@ should replace the portable helper with an approved model/profile allowlist.
 Bootstrap each account/region once:
 
 ```powershell
-cdk bootstrap "aws://$AccountId/$Region"
+cdk bootstrap "aws://$AccountId/$Region" `
+  --context "region=$Region" `
+  --context "modelId=$ModelId" `
+  --context "invokerPrincipalArn=$InvokerPrincipalArn"
 ```
 
 This creates shared CDK deployment roles, an S3 staging bucket, and an ECR

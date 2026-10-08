@@ -1,0 +1,50 @@
+aws sso login --profile a2ademo
+
+
+
+$ModelId = "global.anthropic.claude-sonnet-4-6"
+ 
+if (Test-Path Env:VIRTUAL_ENV) { Remove-Item Env:VIRTUAL_ENV }; py -3.12 -m venv --clear .venv; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; .\.venv\Scripts\python.exe -m pip install --upgrade pip; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+ 
+# Check Python 3.12 is installed
+
+py -0p
+ 
+# Deactivate the current environment, if active
+
+deactivate  # Ignore the error if no environment is active
+ 
+# Rebuild .venv using Python 3.12
+
+py -3.12 -m venv --clear .venv
+ 
+# Activate it
+
+.\.venv\Scripts\Activate.ps1
+ 
+# Upgrade pip and install development dependencies
+
+python -m pip install --upgrade pip
+
+python -m pip install -e ".[dev]"
+ 
+# Verify
+
+python --version
+
+python -m pip show agentcore-a2a-travel-demo
+ 
+ aws sso login --profile a2ademo
+aws sts get-caller-identity --profile a2ademo
+
+$InvokerPrincipalArn = "arn:aws:iam::204098850104:user/Sameer"
+
+$env:AWS_PROFILE = "a2ademo"
+aws sts get-caller-identity
+
+cdk synth `
+  --context "region=$Region" `
+  --context "modelId=$ModelId" `
+  --context "invokerPrincipalArn=$InvokerPrincipalArn" `
+  --context "mainRuntimeName=TravelConciergeMain" `
+  --context "weatherRuntimeName=WeatherPackingSpecialist"

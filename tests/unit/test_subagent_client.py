@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from agents.common.response_parser import A2AInvocationError
-from agents.main_agent.subagent_client import SubagentClient
+from agents.main_agent.subagent_client import SubagentClient, _read_payload
 
 
 class FakeRuntimeClient:
@@ -27,6 +27,18 @@ def successful_payload(text: str = "specialist answer") -> dict[str, Any]:
         "id": "response",
         "result": {"parts": [{"kind": "text", "text": text}]},
     }
+
+
+def test_reads_current_agentcore_response_field() -> None:
+    content = json.dumps(successful_payload()).encode()
+
+    assert _read_payload({"response": BytesIO(content)}) == content
+
+
+def test_reads_legacy_payload_field() -> None:
+    content = json.dumps(successful_payload()).encode()
+
+    assert _read_payload({"payload": content}) == content
 
 
 def test_invokes_configured_runtime_with_a2a_payload() -> None:

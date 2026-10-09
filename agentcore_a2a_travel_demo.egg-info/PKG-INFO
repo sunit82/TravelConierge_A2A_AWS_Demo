@@ -12,6 +12,7 @@ Requires-Dist: bedrock-agentcore[a2a]<2,>=1.24; extra == "agents"
 Requires-Dist: strands-agents<2,>=1.57; extra == "agents"
 Provides-Extra: dev
 Requires-Dist: bedrock-agentcore[a2a]<2,>=1.24; extra == "dev"
+Requires-Dist: botocore[crt]<2,>=1.42; extra == "dev"
 Requires-Dist: mypy<2,>=1.15; extra == "dev"
 Requires-Dist: pytest<9,>=8; extra == "dev"
 Requires-Dist: pytest-asyncio<2,>=0.26; extra == "dev"
@@ -286,10 +287,53 @@ should replace the portable helper with an approved model/profile allowlist.
 
 ## 7. Bootstrap CDK
 
+AgentCore tracing creates CloudWatch Logs delivery resources. Before the first
+deployment in an account and region, allow X-Ray to write spans to the reserved
+CloudWatch log groups and set the regional trace destination to CloudWatch Logs:
+
+```powershell
+$TracePolicy = @{
+  Version = "2012-10-17"
+  Statement = @(@{
+    Sid = "TransactionSearchXRayAccess"
+    Effect = "Allow"
+    Principal = @{ Service = "xray.amazonaws.com" }
+    Action = "logs:PutLogEvents"
+    Resource = @(
+      "arn:aws:logs:${Region}:${AccountId}:log-group:aws/spans:*"
+      "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/application-signals/data:*"
+    )
+    Condition = @{
+      ArnLike = @{ "aws:SourceArn" = "arn:aws:xray:${Region}:${AccountId}:*" }
+      StringEquals = @{ "aws:SourceAccount" = $AccountId }
+    }
+  })
+} | ConvertTo-Json -Depth 10 -Compress
+
+aws logs put-resource-policy `
+  --region $Region `
+  --policy-name AgentCoreXRayToCloudWatchLogs `
+  --policy-document $TracePolicy
+
+aws xray update-trace-segment-destination `
+  --region $Region `
+  --destination CloudWatchLogs
+
+aws xray get-trace-segment-destination --region $Region
+```
+
+Wait until the last command returns `"Status": "ACTIVE"`. This setting applies
+to the whole account and region and changes X-Ray span ingestion to CloudWatch
+Logs, so review its observability and pricing impact before using it in a shared
+account.
+
 Bootstrap each account/region once:
 
 ```powershell
-cdk bootstrap "aws://$AccountId/$Region"
+cdk bootstrap "aws://$AccountId/$Region" `
+  --context "region=$Region" `
+  --context "modelId=$ModelId" `
+  --context "invokerPrincipalArn=$InvokerPrincipalArn"
 ```
 
 This creates shared CDK deployment roles, an S3 staging bucket, and an ECR
@@ -480,12 +524,19 @@ Or use `npx aws-cdk`.
 
 - On restricted networks, allow access to public ECR and package indexes.
 - If your organization provides a Python package proxy, the Dockerfiles accept
-  the standard build argument without embedding it in source:
+  the standard build argument without embedding it in source. Pass the
+  unauthenticated proxy URL to CDK so it applies to both runtime image builds:
 
   ```powershell
-  docker build --build-arg "PIP_INDEX_URL=https://your-approved-proxy/simple/" `
-    --platform linux/arm64 `
-    --file agents\weather_agent\Dockerfile .
+  $PipIndexUrl = "https://packagefeedproxy.microsoft.io/pypi/simple/"
+
+  cdk deploy AgentCoreA2ATravelDemo `
+    --context "region=$Region" `
+    --context "modelId=$ModelId" `
+    --context "invokerPrincipalArn=$InvokerPrincipalArn" `
+    --context "pipIndexUrl=$PipIndexUrl" `
+    --require-approval broadening `
+    --outputs-file cdk-outputs.json
   ```
 
   Do not pass credentials in a build argument because build metadata may retain
@@ -507,6 +558,14 @@ Or use `npx aws-cdk`.
 - Confirm required environment variables are present.
 - Confirm the A2A server binds to `0.0.0.0:9000`.
 - Check ECR image pull and execution-role trust failures.
+
+### Trace delivery creation fails
+
+If `AWS::Logs::Delivery` fails with `X-Ray Delivery Destination is supported
+with CloudWatch Logs`, complete the trace-ingestion setup in step 7 and verify
+that `get-trace-segment-destination` reports `CloudWatchLogs` and `ACTIVE` before
+retrying the deployment. A failed initial deployment may need its rolled-back
+CloudFormation stack deleted before CDK can create it again.
 
 ### Specialist invocation is denied
 

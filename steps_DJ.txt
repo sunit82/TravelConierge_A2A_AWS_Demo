@@ -2,7 +2,12 @@ aws sso login --profile a2ademo
 
 
 
-$ModelId = "global.anthropic.claude-sonnet-4-6"
+.\.venv\Scripts\Activate.ps1
+$env:AWS_PROFILE = "a2ademo"
+$env:AWS_REGION = "us-east-1"
+$env:MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+python -m agents.weather_agent.main
+
  
 if (Test-Path Env:VIRTUAL_ENV) { Remove-Item Env:VIRTUAL_ENV }; py -3.12 -m venv --clear .venv; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; .\.venv\Scripts\python.exe -m pip install --upgrade pip; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
  

@@ -21,6 +21,7 @@ agents = [
 ]
 dev = [
   "bedrock-agentcore[a2a]>=1.24,<2",
+  "botocore[crt]>=1.42,<2",
   "mypy>=1.15,<2",
   "pytest>=8,<9",
   "pytest-asyncio>=0.26,<2",

@@ -28,9 +28,9 @@ def backoff_with_jitter(attempt: int) -> float:
 
 
 def _read_payload(response: dict[str, Any]) -> bytes:
-    body = response.get("payload")
+    body = response.get("response", response.get("payload"))
     if body is None:
-        raise A2AInvocationError("AgentCore response did not include a payload")
+        raise A2AInvocationError("AgentCore response did not include a response body")
     if isinstance(body, bytes):
         return body
     if isinstance(body, str):

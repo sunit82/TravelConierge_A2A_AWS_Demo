@@ -266,6 +266,46 @@ should replace the portable helper with an approved model/profile allowlist.
 
 ## 7. Bootstrap CDK
 
+AgentCore tracing creates CloudWatch Logs delivery resources. Before the first
+deployment in an account and region, allow X-Ray to write spans to the reserved
+CloudWatch log groups and set the regional trace destination to CloudWatch Logs:
+
+```powershell
+$TracePolicy = @{
+  Version = "2012-10-17"
+  Statement = @(@{
+    Sid = "TransactionSearchXRayAccess"
+    Effect = "Allow"
+    Principal = @{ Service = "xray.amazonaws.com" }
+    Action = "logs:PutLogEvents"
+    Resource = @(
+      "arn:aws:logs:${Region}:${AccountId}:log-group:aws/spans:*"
+      "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/application-signals/data:*"
+    )
+    Condition = @{
+      ArnLike = @{ "aws:SourceArn" = "arn:aws:xray:${Region}:${AccountId}:*" }
+      StringEquals = @{ "aws:SourceAccount" = $AccountId }
+    }
+  })
+} | ConvertTo-Json -Depth 10 -Compress
+
+aws logs put-resource-policy `
+  --region $Region `
+  --policy-name AgentCoreXRayToCloudWatchLogs `
+  --policy-document $TracePolicy
+
+aws xray update-trace-segment-destination `
+  --region $Region `
+  --destination CloudWatchLogs
+
+aws xray get-trace-segment-destination --region $Region
+```
+
+Wait until the last command returns `"Status": "ACTIVE"`. This setting applies
+to the whole account and region and changes X-Ray span ingestion to CloudWatch
+Logs, so review its observability and pricing impact before using it in a shared
+account.
+
 Bootstrap each account/region once:
 
 ```powershell
@@ -311,12 +351,17 @@ Inspect `cdk.out` and confirm:
 ## 9. Deploy to AWS
 
 ```powershell
-cdk deploy `
+
+$PipIndexUrl = "https://packagefeedproxy.microsoft.io/pypi/simple/"
+
+cdk deploy AgentCoreA2ATravelDemo `
   --context "region=$Region" `
   --context "modelId=$ModelId" `
   --context "invokerPrincipalArn=$InvokerPrincipalArn" `
+  --context "pipIndexUrl=$PipIndexUrl" `
   --require-approval broadening `
   --outputs-file cdk-outputs.json
+
 ```
 
 CDK builds and publishes both images, creates roles, creates the specialist,
@@ -366,6 +411,31 @@ Expected behavior:
 - response includes clothing/rain advice;
 - response explicitly identifies deterministic demo data.
 
+To test the main runtime from the AgentCore console, submit an A2A JSON-RPC
+request. A plain object containing `prompt` is not valid for an A2A runtime.
+Runtime ARNs, region, and IAM role are invocation settings and must not be
+included in the request body.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "portal-test-1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "role": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "I am visiting Tokyo in April. What weather should I expect, and what should I pack?"
+        }
+      ],
+      "messageId": "portal-message-1"
+    }
+  }
+}
+```
+
 Direct-answer example:
 
 ```powershell
@@ -403,7 +473,32 @@ These commands invoke paid AWS resources.
 2. Open **Logs > Log groups**.
 3. Find groups beneath `/aws/bedrock-agentcore/runtimes/`.
 4. Invoke one delegation and one direct prompt.
-5. Search main logs for `specialist_invocation`.
+5. Confirm that the current weather-runtime log group receives events during
+   the delegation request but not during the direct request.
+6. Search main logs for `specialist_invocation` when application INFO logging is
+   available.
+
+Use the deployed ARNs to derive the current log-group names and inspect recent
+events from PowerShell:
+
+```powershell
+$MainRuntimeId = ($MainRuntimeArn -split "/")[-1]
+$WeatherRuntimeId = ($WeatherRuntimeArn -split "/")[-1]
+$MainLogGroup = "/aws/bedrock-agentcore/runtimes/$MainRuntimeId-DEFAULT"
+$WeatherLogGroup = "/aws/bedrock-agentcore/runtimes/$WeatherRuntimeId-DEFAULT"
+$Since = [DateTimeOffset]::UtcNow.AddMinutes(-15).ToUnixTimeMilliseconds()
+
+aws logs filter-log-events `
+  --region $Region `
+  --log-group-name $MainLogGroup `
+  --start-time $Since `
+  --filter-pattern '"specialist_invocation"'
+
+aws logs filter-log-events `
+  --region $Region `
+  --log-group-name $WeatherLogGroup `
+  --start-time $Since
+```
 
 Delegated calls emit structured fields similar to:
 
@@ -418,7 +513,12 @@ Delegated calls emit structured fields similar to:
 }
 ```
 
-The direct request must not have a specialist invocation for its request window.
+The strongest proof is a single trace containing the main runtime invocation and
+the downstream weather runtime invocation. Weather-runtime activity at the same
+timestamp is supporting evidence. The fixture-specific Tokyo range and demo-data
+disclaimer confirm the expected specialist result, but response wording alone is
+not proof of delegation. The direct request must not show weather-runtime
+activity or a specialist invocation for its request window.
 
 ### X-Ray and GenAI observability
 
@@ -497,6 +597,14 @@ Or use `npx aws-cdk`.
 - Confirm required environment variables are present.
 - Confirm the A2A server binds to `0.0.0.0:9000`.
 - Check ECR image pull and execution-role trust failures.
+
+### Trace delivery creation fails
+
+If `AWS::Logs::Delivery` fails with `X-Ray Delivery Destination is supported
+with CloudWatch Logs`, complete the trace-ingestion setup in step 7 and verify
+that `get-trace-segment-destination` reports `CloudWatchLogs` and `ACTIVE` before
+retrying the deployment. A failed initial deployment may need its rolled-back
+CloudFormation stack deleted before CDK can create it again.
 
 ### Specialist invocation is denied
 

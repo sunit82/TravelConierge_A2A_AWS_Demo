@@ -1,0 +1,9 @@
+{
+  "AgentCoreA2ATravelDemo": {
+    "MainRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:204098850104:runtime/TravelConciergeMain-ENSmRm4TDG",
+    "WeatherRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:204098850104:runtime/WeatherPackingSpecialist-GCjWjPA1M9",
+    "Region": "us-east-1",
+    "DemoInvokerRoleArn": "arn:aws:iam::204098850104:role/AgentCoreA2ATravelDemo-DemoInvokerRole483D0AF5-IVp3Dsh2Fbfg",
+    "RuntimeLogGroupPrefix": "/aws/bedrock-agentcore/runtimes/"
+  }
+}
